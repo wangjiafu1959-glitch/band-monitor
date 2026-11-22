@@ -1,0 +1,88 @@
+name: 档位监控
+
+# GitHub 的 cron 不准（常见延迟 1-2 小时），所以不靠 cron 精确定时。
+# 思路：少启动几次，但每次 job 长驻，内部每 15 秒查一次。
+#   上午段 08:30 启动 → 跑到 11:35（含午休前）
+#   下午段 12:55 启动 → 跑到 15:10（含 15:05 收盘表）
+# 单个 job 上限 6 小时，所以必须拆两段；午休不跑，省分钟。
+on:
+  schedule:
+    - cron: "30 0 * * 1-5"    # 08:30 CST 上午段
+    - cron: "55 4 * * 1-5"    # 12:55 CST 下午段
+    - cron: "20 7 * * 1-5"    # 15:20 CST 兜底发收盘表
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "morning/afternoon=长驻 / close=只发收盘表 / once=查一次"
+        required: false
+        default: "close"
+        type: choice
+        options: [morning, afternoon, close, once]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: band-monitor
+  cancel-in-progress: false
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.m.outputs.mode }}
+    steps:
+      - id: m
+        run: |
+          IN="${{ github.event.inputs.mode }}"
+          S="${{ github.event.schedule }}"
+          if [ -n "$IN" ]; then
+            M="$IN"
+          else
+            case "$S" in
+              "30 0 * * 1-5") M=morning ;;
+              "55 4 * * 1-5") M=afternoon ;;
+              "20 7 * * 1-5") M=close ;;
+              *)              M=once ;;
+            esac
+          fi
+          echo "mode=$M" >> "$GITHUB_OUTPUT"
+
+  run:
+    needs: route
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      TZ: Asia/Shanghai
+      EMAIL_USER: ${{ secrets.EMAIL_USER }}
+      EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
+      EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
+      MODE: ${{ needs.route.outputs.mode }}
+      HOLDINGS: ${{ secrets.HOLDINGS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 运行
+        run: |
+          case "$MODE" in
+            morning)   export END_AT=11:35; python monitor.py --session ;;
+            afternoon) export END_AT=15:10; python monitor.py --session ;;
+            close)     python monitor.py --close ;;
+            *)         python monitor.py --once ;;
+          esac
+
+      - name: 保存状态
+        if: always()
+        run: |
+          git config user.name  "band-monitor-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add state.json 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "state $(TZ=Asia/Shanghai date +%F_%H%M)"
+          git pull --rebase --autostash || true
+          git push || true
