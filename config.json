@@ -1,0 +1,205 @@
+{
+  "meta": {
+    "version": 3,
+    "updated": "2026-11-22",
+    "note": "只做三件事：收盘发档位表、档位变化提醒、暴跌2%提醒。"
+  },
+  "trade_hours": {
+    "start": "09:30",
+    "end": "15:00",
+    "lunch_start": "11:30",
+    "lunch_end": "13:00",
+    "poll_seconds": 15,
+    "close_report_at": "15:05"
+  },
+  "notify": {
+    "email": true,
+    "sound": true
+  },
+  "drop_alert": {
+    "targets": [
+      "gem",
+      "hs300"
+    ],
+    "pct": -2.0,
+    "note": "当日跌幅超过 2% 提醒一次"
+  },
+  "bands": [
+    {
+      "label": "S0 0-5%",
+      "pct_low": 0,
+      "pct_high": 5,
+      "ratio": 1.0
+    },
+    {
+      "label": "S1 5-10%",
+      "pct_low": 5,
+      "pct_high": 10,
+      "ratio": 0.963
+    },
+    {
+      "label": "S2 10-15%",
+      "pct_low": 10,
+      "pct_high": 15,
+      "ratio": 0.887
+    },
+    {
+      "label": "S3 15-20%",
+      "pct_low": 15,
+      "pct_high": 20,
+      "ratio": 0.818
+    },
+    {
+      "label": "S4 20-25%",
+      "pct_low": 20,
+      "pct_high": 25,
+      "ratio": 0.752
+    },
+    {
+      "label": "S5 25-30%",
+      "pct_low": 25,
+      "pct_high": 30,
+      "ratio": 0.685
+    },
+    {
+      "label": "S6 30-35%",
+      "pct_low": 30,
+      "pct_high": 35,
+      "ratio": 0.615
+    },
+    {
+      "label": "S7 35-40%",
+      "pct_low": 35,
+      "pct_high": 40,
+      "ratio": 0.547
+    },
+    {
+      "label": "S8 40-45%",
+      "pct_low": 40,
+      "pct_high": 45,
+      "ratio": 0.482
+    },
+    {
+      "label": "S9 45-50%",
+      "pct_low": 45,
+      "pct_high": 50,
+      "ratio": 0.417
+    },
+    {
+      "label": "S10 50-55%",
+      "pct_low": 50,
+      "pct_high": 55,
+      "ratio": 0.353
+    },
+    {
+      "label": "S11 55-60%",
+      "pct_low": 55,
+      "pct_high": 60,
+      "ratio": 0.29
+    },
+    {
+      "label": "S12 60-65%",
+      "pct_low": 60,
+      "pct_high": 65,
+      "ratio": 0.23
+    },
+    {
+      "label": "S13 65-70%",
+      "pct_low": 65,
+      "pct_high": 70,
+      "ratio": 0.175
+    },
+    {
+      "label": "S14 70-75%",
+      "pct_low": 70,
+      "pct_high": 75,
+      "ratio": 0.125
+    },
+    {
+      "label": "S15 75-80%",
+      "pct_low": 75,
+      "pct_high": 80,
+      "ratio": 0.075
+    },
+    {
+      "label": "S16 80-85%",
+      "pct_low": 80,
+      "pct_high": 85,
+      "ratio": 0.0
+    },
+    {
+      "label": "S17 85-90%",
+      "pct_low": 85,
+      "pct_high": 90,
+      "ratio": 0.0
+    },
+    {
+      "label": "S18 90-95%",
+      "pct_low": 90,
+      "pct_high": 95,
+      "ratio": 0.0
+    },
+    {
+      "label": "S19 95-100%",
+      "pct_low": 95,
+      "pct_high": 100,
+      "ratio": 0.0
+    }
+  ],
+  "targets": [
+    {
+      "id": "gem",
+      "name": "创业板",
+      "mode": "pe",
+      "quote_secid": "0.399006",
+      "etf_code": "159952",
+      "etf_secid": "0.159952",
+      "unit": "点",
+      "step": 200,
+      "anchor_point": 2200,
+      "anchor_shares": 0,
+      "shares_per_step": 0,
+      "max_shares": 0,
+      "shares": 0
+    },
+    {
+      "id": "hs300",
+      "name": "沪深300",
+      "mode": "valuation",
+      "quote_secid": "1.000300",
+      "etf_code": "510300",
+      "etf_secid": "1.510300",
+      "index_code": "SH000300",
+      "unit": "点",
+      "budget": 0,
+      "shares": 0
+    },
+    {
+      "id": "broker",
+      "name": "证券ETF",
+      "mode": "valuation",
+      "quote_secid": "0.399975",
+      "etf_code": "515010",
+      "etf_secid": "1.515010",
+      "index_code": "SZ399975",
+      "unit": "点",
+      "budget": 0,
+      "shares": 0
+    },
+    {
+      "id": "cn",
+      "name": "中概互联",
+      "mode": "price",
+      "quote_secid": "1.513050",
+      "etf_code": "513050",
+      "etf_secid": "1.513050",
+      "unit": "元",
+      "step": 0.03,
+      "anchor_point": 0.86,
+      "anchor_shares": 0,
+      "shares_per_step": 0,
+      "max_shares": 0,
+      "shares": 0
+    }
+  ]
+}
