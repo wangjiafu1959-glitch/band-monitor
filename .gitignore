@@ -1,0 +1,7 @@
+secrets.json
+config.local.json
+state.json
+cache.json
+__pycache__/
+*.bak
+*.log
