@@ -294,11 +294,18 @@ def check(cfg, levels, state, quiet=False):
                      fmt(cur["amt"]), fmt(hold_amt),
                      ("买 " + fmt(diff)) if diff > 100 else (("卖 " + fmt(-diff)) if diff < -100 else "对齐")))
 
-        # ① 档位变化
+        # ① 档位变化：同一档位一天只提醒一次（防止在档位线上反复横跳刷屏）
         last = state.setdefault("level", {}).get(t["id"])
+        seen = state.setdefault("alerted_levels", {}).setdefault(t["id"], [])
         if last != cur["label"]:
             state["level"][t["id"]] = cur["label"]
-            if last is not None:
+            first_run = (last is None)
+            if first_run:
+                # 启动时的当前档位记为已知，不提醒
+                if cur["label"] not in seen:
+                    seen.append(cur["label"])
+            elif cur["label"] not in seen:
+                seen.append(cur["label"])
                 if abs(diff) <= 100:
                     act_txt = "不需要操作"
                 else:
@@ -306,12 +313,12 @@ def check(cfg, levels, state, quiet=False):
                 text = ("%s 掉档\n\n%s 现价 %.2f（%+.2f%%）\n"
                         "档位：%s → **%s**\n\n"
                         "该档目标：%s 元\n当前持仓：%s 元（%s 股）\n"
-                        "**%s**"
+                        "**%s**\n\n（本档今日只提醒一次）"
                         % (t["name"], t["name"], px, pct, last, cur["label"],
                            fmt(cur["amt"]), fmt(hold_amt), fmt(t.get("shares", 0)), act_txt))
                 print("\n" + "=" * 56 + "\n" + text + "\n" + "=" * 56)
                 beep(cfg)
-                send_email(cfg, "%s 掉到 %s" % (t["name"], cur["label"]), text)
+                send_email(cfg, "%s 进入 %s" % (t["name"], cur["label"]), text)
 
         # ② 暴跌提醒
         da = cfg.get("drop_alert") or {}
