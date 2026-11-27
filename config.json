@@ -150,7 +150,7 @@
     {
       "id": "gem",
       "name": "创业板",
-      "mode": "pe",
+      "mode": "pe_amt",
       "quote_secid": "0.399006",
       "etf_code": "159952",
       "etf_secid": "0.159952",
@@ -160,46 +160,58 @@
       "anchor_shares": 0,
       "shares_per_step": 0,
       "max_shares": 0,
-      "shares": 0
+      "shares": 0,
+      "index_code": "SZ399006",
+      "pe_low": 20,
+      "pe_high": 50,
+      "anchor_amt": 25000,
+      "point_low": 1764,
+      "point_high": 4410
     },
     {
       "id": "hs300",
       "name": "沪深300",
-      "mode": "valuation",
+      "mode": "point_val",
       "quote_secid": "1.000300",
       "etf_code": "510300",
       "etf_secid": "1.510300",
       "index_code": "SH000300",
       "unit": "点",
       "budget": 0,
-      "shares": 0
+      "shares": 0,
+      "band_width": 10,
+      "anchor_point": 4000,
+      "step": 200
     },
     {
       "id": "broker",
       "name": "证券ETF",
-      "mode": "valuation",
+      "mode": "point_val",
       "quote_secid": "0.399975",
       "etf_code": "515010",
       "etf_secid": "1.515010",
       "index_code": "SZ399975",
       "unit": "点",
       "budget": 0,
-      "shares": 0
+      "shares": 0,
+      "anchor_point": 700,
+      "step": 20
     },
     {
       "id": "cn",
       "name": "中概互联",
-      "mode": "price",
+      "mode": "amt_linear",
       "quote_secid": "1.513050",
       "etf_code": "513050",
       "etf_secid": "1.513050",
       "unit": "元",
       "step": 0.03,
       "anchor_point": 0.86,
-      "anchor_shares": 0,
-      "shares_per_step": 0,
-      "max_shares": 0,
-      "shares": 0
+      "shares": 0,
+      "anchor_amt": 7500,
+      "amt_per_step": 1000,
+      "min_amt": 0,
+      "max_amt": 12000
     }
   ]
 }
