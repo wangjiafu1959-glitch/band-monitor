@@ -103,26 +103,150 @@ def quotes(secids):
 
 
 # --------------------------------------------------------------------------- #
-def build_levels(cfg):
+LEVELS = "levels.json"
+FREEZE_DAYS = 7          # 档位线冻结天数：7 天内不改，避免每天重新标定导致区间漂移
+SIG_KEYS = ("mode", "budget", "band_width", "anchor_amt",
+            "amt_per_step", "step", "anchor_point", "max_amt", "min_amt")
+HYST = 0.015             # 滞回带 1.5%：价格要越过档位线 1.5% 才换档，防止贴着线来回跳
+MIN_ACT_PCT = 0.03       # 差额不到目标金额的 3%（且不足 200 元）就不提醒，防止噪音
+
+
+def make_bands(base, width=5):
+    """按 width 生成档位。比率从原始 5% 表在 lo 处采样。"""
+    def ratio_at(p):
+        for b in base:
+            if b["pct_low"] <= p < b["pct_high"]:
+                return b["ratio"]
+        return 0.0
+    out = []
+    for lo in range(0, 100, width):
+        out.append({"label": "S%d %d-%d%%" % (lo // width, lo, lo + width),
+                    "pct_low": lo, "pct_high": lo + width, "ratio": ratio_at(lo)})
+    return out
+
+
+def interp_ratio(base, pct):
+    """按分位线性插值出目标比例（连续曲线，不是跳档）"""
+    pts = [(b["pct_low"], b["ratio"]) for b in base] + [(100.0, 0.0)]
+    for i in range(len(pts) - 1):
+        p0, r0 = pts[i]
+        p1, r1 = pts[i + 1]
+        if p0 <= pct <= p1:
+            if p1 == p0:
+                return r0
+            return r0 + (r1 - r0) * (pct - p0) / (p1 - p0)
+    return 0.0
+
+
+def build_levels(cfg, force=False):
+    """档位表缓存 7 天。线一冻住，档位就只随价格变，不随估值重算漂移。"""
+    import datetime as dt
+    cache = load_json(os.path.join(BASE, LEVELS), {})
+    today_d = dt.date.today()
     out = {}
     for t in cfg["targets"]:
         mode = t.get("mode", "price")
+        tid = t["id"]
+        c = cache.get(tid) or {}
+        ok = False
+        if not force and c.get("rows") and c.get("built"):
+            try:
+                age = (today_d - dt.date.fromisoformat(c["built"])).days
+                ok = (0 <= age < FREEZE_DAYS
+                      and list(c.get("sig") or []) == [t.get(k) for k in SIG_KEYS])
+            except Exception:                  # noqa: BLE001
+                ok = False
+
         q = quotes([t["quote_secid"], t["etf_secid"]])
         qp = (q.get(t["quote_secid"]) or {}).get("price")
         ep = (q.get(t["etf_secid"]) or {}).get("price")
-        ratio = (ep / qp) if (qp and ep) else 1.0
+        ratio = (ep / qp) if (qp and ep) else (c.get("ratio") or 1.0)
+
+        if ok:
+            out[tid] = {"rows": c["rows"], "ratio": ratio, "comp": c.get("comp"),
+                        "mode": c.get("mode", mode), "built": c["built"], "frozen": True}
+            continue
 
         if mode == "valuation":
             m = core.build_model({"index_code": t["index_code"], "index_secid": t["quote_secid"]})
-            rows = core.grid_rows(m, float(t.get("budget", 0)), cfg["bands"])
+            bands = make_bands(cfg["bands"], int(t.get("band_width", 5)))
+            rows = core.grid_rows(m, float(t.get("budget", 0)), bands)
             levels = [{"label": r["label"], "line": r["entry_index_price"],
                        "shares": None, "amt": r["target_value"]} for r in rows]
             comp = m["comp"]
-        else:
-            step = float(t["step"])
+        elif mode == "point_val":
+            m = core.build_model({"index_code": t["index_code"], "index_secid": t["quote_secid"]})
             anchor = float(t["anchor_point"])
-            per = float(t["shares_per_step"])
-            base_sh = float(t["anchor_shares"])
+            step = float(t["step"])
+            budget = float(t.get("budget", 0))
+            levels = []
+            for k in range(-8, 9):
+                P = anchor + step * k
+                pct = core._pct(m["detrended"], P) * 100.0
+                r = max(0.0, min(1.0, interp_ratio(cfg["bands"], pct)))
+                amt = budget * r
+                etf_px = P * ratio
+                levels.append({"label": "%.0f" % P, "line": P,
+                               "shares": (amt / etf_px) if etf_px else 0.0,
+                               "amt": amt, "pct": pct})
+            levels.sort(key=lambda r: -r["line"])
+            comp = m["comp"]
+
+        elif mode == "amt_linear":
+            anchor = float(t["anchor_point"])
+            step = float(t["step"])
+            anchor_amt = float(t.get("anchor_amt", 0))
+            per = float(t.get("amt_per_step", 0))
+            lo = float(t.get("min_amt", 0))
+            hi = float(t.get("max_amt", 1e12))
+            is_yuan = t.get("unit") == "元"
+            levels = []
+            for k in range(-8, 9):
+                P = anchor + step * k
+                amt = max(lo, min(hi, anchor_amt - k * per))
+                etf_px = P * ratio
+                levels.append({"label": ("%.2f" % P) if is_yuan else ("%.0f" % P),
+                               "line": P, "shares": (amt / etf_px) if etf_px else 0.0,
+                               "amt": amt})
+            levels.sort(key=lambda r: -r["line"])
+            comp = None
+
+        elif mode == "pe_amt":
+            anchor = float(t["anchor_point"])
+            step = float(t["step"])
+            pe_low = float(t.get("pe_low", 20))
+            pe_high = float(t.get("pe_high", 50))
+            # 用当前 PE 把 PE 换成点位；拿不到就用配置里的兜底点位
+            try:
+                ev = core.fetch_eva(t["index_code"])
+                pe0 = float(ev["pe"])
+                p_low = (qp or anchor) * pe_low / pe0
+                p_high = (qp or anchor) * pe_high / pe0
+            except Exception:                  # noqa: BLE001
+                p_low = float(t.get("point_low", 1764))
+                p_high = float(t.get("point_high", 4410))
+
+            def ratio_at(P):
+                r = (p_high - P) / (p_high - p_low)
+                return max(0.0, min(1.0, r))
+
+            anchor_amt = float(t.get("anchor_amt", 25000))
+            max_amt = anchor_amt / ratio_at(anchor) if ratio_at(anchor) else anchor_amt
+            is_yuan = t.get("unit") == "元"
+            levels = []
+            for k in range(-8, 9):
+                P = anchor + step * k
+                amt = max_amt * ratio_at(P)
+                etf_px = P * ratio
+                sh = (amt / etf_px) if etf_px else 0.0
+                levels.append({"label": ("%.0f" % P), "line": P,
+                               "shares": sh, "amt": amt})
+            levels.sort(key=lambda r: -r["line"])
+            comp = None
+
+        else:
+            step = float(t["step"]); anchor = float(t["anchor_point"])
+            per = float(t["shares_per_step"]); base_sh = float(t["anchor_shares"])
             cap = float(t.get("max_shares", 10 ** 9))
             is_yuan = t.get("unit") == "元"
             levels = []
@@ -134,17 +258,22 @@ def build_levels(cfg):
             levels.sort(key=lambda r: -r["line"])
             comp = None
 
-        out[t["id"]] = {"rows": levels, "ratio": ratio, "comp": comp, "mode": mode}
+        built = today_d.isoformat()
+        out[tid] = {"rows": levels, "ratio": ratio, "comp": comp, "mode": mode,
+                    "built": built, "frozen": False}
+        cache[tid] = {"rows": levels, "ratio": ratio, "comp": comp, "mode": mode,
+                      "built": built,
+                      "sig": list(t.get(k) for k in SIG_KEYS)}
+
+    save_json(os.path.join(BASE, LEVELS), cache)
     return out
 
 
-def level_of(info, price):
-    """算术档（每 N 点/元）取最近格点；估值档按区间归属"""
-    rows = info["rows"]
-    if not rows:
-        return None
-    if info.get("mode") in ("pe", "price"):
-        return min(rows, key=lambda r: abs(r["line"] - price))
+def _nearest(rows, price):
+    return min(rows, key=lambda r: abs(r["line"] - price))
+
+
+def _interval(rows, price):
     if price >= rows[0]["line"]:
         return rows[0]
     for i, r in enumerate(rows):
@@ -154,8 +283,49 @@ def level_of(info, price):
     return rows[-1]
 
 
+def level_of(info, price, cur=None, margin=HYST):
+    """带滞回：价格必须越过档位线 margin 才换档，避免贴线横跳"""
+    rows = info["rows"]
+    if not rows:
+        return None
+    nearest_mode = info.get("mode") in ("pe", "price", "pe_amt", "point_val", "amt_linear")
+    nat = _nearest(rows, price) if nearest_mode else _interval(rows, price)
+    if not cur or margin <= 0:
+        return nat
+
+    idx = next((i for i, r in enumerate(rows) if r["label"] == cur), None)
+    if idx is None:
+        return nat
+    nat_idx = rows.index(nat)
+    if nat_idx == idx:
+        return rows[idx]
+
+    def boundary(a, b):
+        """相邻两档的分界线"""
+        if nearest_mode:
+            return (rows[a]["line"] + rows[b]["line"]) / 2.0
+        return rows[max(a, b)]["line"]
+
+    if nat_idx < idx:            # 上涨，要越过上边界 margin
+        b = boundary(idx, idx - 1) if idx > 0 else rows[idx]["line"]
+        if price < b * (1 + margin):
+            return rows[idx]
+    else:                        # 下跌，要越过下边界 margin
+        if idx + 1 >= len(rows):
+            return nat
+        b = boundary(idx, idx + 1)
+        if price > b * (1 - margin):
+            return rows[idx]
+    return nat
+
+
 def fmt(x):
     return format(int(round(x)), ",")
+
+
+def min_action(amt):
+    """低于这个差额就不值得操作"""
+    return max(200.0, MIN_ACT_PCT * float(amt or 0))
 
 
 # --------------------------------------------------------------------------- #
@@ -253,15 +423,22 @@ def close_report(cfg, levels, q, state, force=False):
         px = qq.get("price")
         if not px or not info:
             continue
-        cur = level_of(info, px)
+        cur = level_of(info, px, state.get("level", {}).get(t["id"]))
+        state.setdefault("level", {})[t["id"]] = cur["label"]
         etf_px = qe.get("price") or 0
-        hold_amt = float(t.get("shares", 0)) * etf_px
+        hold_sh = float(t.get("shares", 0))
+        hold_amt = hold_sh * etf_px
         diff = cur["amt"] - hold_amt
-        act = ("**买 %s 元**" % fmt(diff)) if diff > 100 else \
-              (("**卖 %s 元**" % fmt(-diff)) if diff < -100 else "不动")
+        th = min_action(cur["amt"])
+        act = ("**买 %s 元**" % fmt(diff)) if diff > th else \
+              (("**卖 %s 元**" % fmt(-diff)) if diff < -th else "不动")
+        tgt_txt = (("%s 股 / %s 元" % (fmt(cur["shares"]), fmt(cur["amt"])))
+                   if cur.get("shares") is not None else ("%s 元" % fmt(cur["amt"])))
+        hold_txt = ("%s 股 / %s 元" % (fmt(hold_sh), fmt(hold_amt))) if hold_sh else \
+                   ("%s 元" % fmt(hold_amt))
         lines.append("**%s**（%s）　%.2f（%+.2f%%）" % (t["name"], t["etf_code"], px, qq.get("pct") or 0))
-        lines.append("　档位 %s ｜ 目标 %s 元 ｜ 持仓 %s 元 ｜ %s"
-                     % (cur["label"], fmt(cur["amt"]), fmt(hold_amt), act))
+        lines.append("　档位 %s ｜ 目标 %s ｜ 持仓 %s ｜ %s"
+                     % (cur["label"], tgt_txt, hold_txt, act))
         lines.append("")
     send_email(cfg, "今日档位表 %s" % today(), "\n".join(lines))
     state["closed"] = today()
@@ -283,16 +460,17 @@ def check(cfg, levels, state, quiet=False):
         if not px or not info:
             continue
         pct = qq.get("pct") or 0
-        cur = level_of(info, px)
+        cur = level_of(info, px, state.get("level", {}).get(t["id"]))
         etf_px = qe.get("price") or 0
         hold_amt = float(t.get("shares", 0)) * etf_px
         diff = cur["amt"] - hold_amt
 
         if not quiet:
+            _th = min_action(cur["amt"])
             print("[%s] %-6s %9.2f (%+5.2f%%) 档位 %-9s 目标 %9s 持仓 %9s %s"
                   % (now().strftime("%H:%M:%S"), t["name"], px, pct, cur["label"],
                      fmt(cur["amt"]), fmt(hold_amt),
-                     ("买 " + fmt(diff)) if diff > 100 else (("卖 " + fmt(-diff)) if diff < -100 else "对齐")))
+                     ("买 " + fmt(diff)) if diff > _th else (("卖 " + fmt(-diff)) if diff < -_th else "对齐")))
 
         # ① 档位变化：同一档位一天只提醒一次（防止在档位线上反复横跳刷屏）
         last = state.setdefault("level", {}).get(t["id"])
@@ -306,16 +484,24 @@ def check(cfg, levels, state, quiet=False):
                     seen.append(cur["label"])
             elif cur["label"] not in seen:
                 seen.append(cur["label"])
+                th = min_action(cur["amt"])
+                if abs(diff) <= th:
+                    act_txt = "不需要操作"
+                    print("      （档位 %s 已切换，但差额 %s 元低于阈值 %s，不发邮件）"
+                          % (cur["label"], fmt(abs(diff)), fmt(th)))
+                    continue
                 if abs(diff) <= 100:
                     act_txt = "不需要操作"
                 else:
                     act_txt = "%s %s 元" % ("买入" if diff > 0 else "卖出", fmt(abs(diff)))
-                text = ("%s 掉档\n\n%s 现价 %.2f（%+.2f%%）\n"
+                tgt_txt = (("%s 股 / %s 元" % (fmt(cur["shares"]), fmt(cur["amt"])))
+                           if cur.get("shares") is not None else ("%s 元" % fmt(cur["amt"])))
+                text = ("%s 档位切换\n\n%s 现价 %.2f（%+.2f%%）\n"
                         "档位：%s → **%s**\n\n"
-                        "该档目标：%s 元\n当前持仓：%s 元（%s 股）\n"
+                        "该档目标：%s\n当前持仓：%s 股 / %s 元\n"
                         "**%s**\n\n（本档今日只提醒一次）"
                         % (t["name"], t["name"], px, pct, last, cur["label"],
-                           fmt(cur["amt"]), fmt(hold_amt), fmt(t.get("shares", 0)), act_txt))
+                           tgt_txt, fmt(t.get("shares", 0)), fmt(hold_amt), act_txt))
                 print("\n" + "=" * 56 + "\n" + text + "\n" + "=" * 56)
                 beep(cfg)
                 send_email(cfg, "%s 进入 %s" % (t["name"], cur["label"]), text)
@@ -425,7 +611,8 @@ def main():
 
     state = load_json(STATE, {})
     if state.get("date") != today():
-        state = {"date": today(), "level": {}, "closed": None}
+        # 保留昨天的档位，这样今天跳空到新档也能触发提醒
+        state = {"date": today(), "level": state.get("level") or {}, "closed": None}
 
     if "--close" in sys.argv:
         q = quotes([s for t in cfg["targets"] for s in (t["quote_secid"], t["etf_secid"])])
@@ -445,8 +632,8 @@ def main():
     while True:
         try:
             if state.get("date") != today():
-                state = {"date": today(), "level": {}, "closed": None}
-                print("\n新的一天，重建档位...")
+                state = {"date": today(), "level": state.get("level") or {}, "closed": None}
+                print("\n新的一天，检查档位线是否到期...")
                 levels = build_levels(cfg)
 
             if in_session(cfg):
